@@ -1,15 +1,14 @@
 import express, { Request, Response } from "express";
 import cors from "cors";
 import axios from "axios";
-import cheerio from "cheerio";
-import bodyParser from "body-parser";
+import * as cheerio from "cheerio";
 
 const app = express();
 
-app.use(bodyParser.json({ limit: "50mb" }));
 app.use(cors());
 
 const PORT = process.env.PORT || 3300;
+
 const URL =
   "https://blox-fruits.fandom.com/wiki/Blox_Fruits_%22Stock%22";
 
@@ -18,29 +17,31 @@ interface FruitObj {
   price: number;
 }
 
-const removeDuplicates = (arr: string[]) => {
+function removeDuplicates(arr: string[]) {
   return [...new Set(arr)];
-};
+}
 
 async function scrapeStock(selector: string) {
   const res = await axios.get(URL);
   const $ = cheerio.load(res.data);
 
-  const names: string[] = [];
-  const prices: string[] = [];
+  const data: FruitObj[] = [];
 
   $(selector).each((_, el) => {
     const name = $(el).find("big b a").attr("title");
-    const price = $(el).find("span").last().text();
+    const priceText = $(el).find("span").last().text();
 
-    if (name) names.push(name);
-    if (price) prices.push(price);
+    if (!name) return;
+
+    data.push({
+      name,
+      price: parseFloat(priceText.replace(/,/g, "") || "0"),
+    });
   });
 
-  return {
-    names: removeDuplicates(names),
-    prices: removeDuplicates(prices),
-  };
+  return removeDuplicates(data.map(d => JSON.stringify(d))).map(d =>
+    JSON.parse(d)
+  );
 }
 
 app.get("/", (req: Request, res: Response) => {
@@ -59,16 +60,12 @@ app.get("/v1/currentstock", async (req: Request, res: Response) => {
     const selector =
       "#mw-customcollapsible-current figure > figcaption > center";
 
-    const { names, prices } = await scrapeStock(selector);
-
-    const data: FruitObj[] = names.map((name, i) => ({
-      name,
-      price: parseFloat((prices[i] || "0").replace(/,/g, "")),
-    }));
+    const data = await scrapeStock(selector);
 
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: "Failed to fetch current stock" });
+    console.error(err);
+    res.status(500).json({ error: "current stock failed" });
   }
 });
 
@@ -77,16 +74,12 @@ app.get("/v1/laststock", async (req: Request, res: Response) => {
     const selector =
       "#mw-customcollapsible-last figure > figcaption > center";
 
-    const { names, prices } = await scrapeStock(selector);
-
-    const data: FruitObj[] = names.map((name, i) => ({
-      name,
-      price: parseFloat((prices[i] || "0").replace(/,/g, "")),
-    }));
+    const data = await scrapeStock(selector);
 
     res.json(data);
   } catch (err) {
-    res.status(500).json({ error: "Failed to fetch last stock" });
+    console.error(err);
+    res.status(500).json({ error: "last stock failed" });
   }
 });
 
