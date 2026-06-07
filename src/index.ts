@@ -1,105 +1,94 @@
-import express, { Request, Response } from "express";
+import express from "express";
 import cors from "cors";
 import axios from "axios";
-import cheerio from "cheerio";
-import bodyParser from "body-parser";
+import * as cheerio from "cheerio";
 
 const app = express();
-app.use(bodyParser.json({ limit: "50mb" }));
 app.use(cors());
-app.use(
-  bodyParser.urlencoded({
-    limit: "50mb",
-    extended: true,
-    parameterLimit: 50000,
-  })
-);
 
-const port: number = 3300;
-const url: string = "https://blox-fruits.fandom.com/wiki/Blox_Fruits_%22Stock%22";
+const PORT = process.env.PORT || 3300;
 
-interface FruitObj {
-    name: string;
-    price: number;
+const URL =
+  "https://blox-fruits.fandom.com/wiki/Blox_Fruits_%22Stock%22";
+
+type Fruit = {
+  name: string;
+  price: number;
+};
+
+function safeNumber(text: string | undefined) {
+  if (!text) return 0;
+  const cleaned = text.replace(/,/g, "").match(/\d+/g);
+  return cleaned ? parseFloat(cleaned[0]) : 0;
 }
 
-const removeDuplicateItems = (arr: string[]): string[] => {
-    const uniqueFruitsSet: Set<string> = new Set(arr);
-    const uniqueFruitsArr: string[] = [...uniqueFruitsSet];
-    return uniqueFruitsArr;
-}
+async function scrape(section: string) {
+  const { data } = await axios.get(URL);
+  const $ = cheerio.load(data);
 
-const getFruits = (typeStockElement: string, res: Response): Promise<string[]> => {
-    return axios(url).then(result => {
-        const data = result.data;
-        const $ = cheerio.load(data);
-        const toRemoveDuplicateFruits: string[] = [];
+  const names: string[] = [];
+  const prices: string[] = [];
 
-        $(typeStockElement, data).each((i, ele) => {
-            const getFruitName: any = $(ele).find("big b a").attr("title");
-            toRemoveDuplicateFruits.push(getFruitName);
-        });
-
-        const fruitNames: string[] = removeDuplicateItems(toRemoveDuplicateFruits);
-
-        return fruitNames;
-    }).catch (error => {
-        console.log(error);
-        res.status(500).json();
-        return [];
-    });
-}
-
-const getPriceFruits = (typeStockElement: string, res: Response): Promise<string[]> => {
-    return axios(url).then(result => {
-        const data = result.data;
-        const $ = cheerio.load(data);
-        const toRemoveDuplicatePrice: string[] = [];
-
-        $(typeStockElement, data).each((i, ele) => {
-            const getFruitName: any = $(ele).find("span").last().text();
-            toRemoveDuplicatePrice.push(getFruitName);
-        });
-
-        const fruitPrices = removeDuplicateItems(toRemoveDuplicatePrice);
-        return fruitPrices;
-    }).catch (error => {
-        console.log(error);
-        res.status(500).json();
-        return [];
-    });
-}
-
-app.get("/v1/currentstock", async (req: Request, res: Response) => {
-    const currentStockElement: string = "#mw-customcollapsible-current figure > figcaption > center";
-    const fruitNames = await getFruits(currentStockElement, res);
-    const fruitPrices = await getPriceFruits(currentStockElement, res);
-    const fruitsJson: FruitObj[] = [];
-
-    for (let i = 0; i < fruitNames.length; i++) {
-        fruitsJson.push({
-            name: fruitNames[i],
-            price: parseFloat(fruitPrices[i].replace(/,/g, '')),
-        })
+  // grab all links inside section (more stable than spans)
+  $(`#${section} a`).each((_, el) => {
+    const name = $(el).attr("title");
+    if (name && !name.includes("Special:")) {
+      names.push(name);
     }
+  });
 
-    res.status(200).json(fruitsJson);
+  // grab all text nodes that look like numbers
+  $(`#${section}`).find("span, b, td").each((_, el) => {
+    const txt = $(el).text().trim();
+    if (/\d/.test(txt)) {
+      prices.push(txt);
+    }
+  });
+
+  return { names, prices };
+}
+
+app.get("/", (_, res) => {
+  res.json({
+    status: "ok",
+    routes: ["/v1/currentstock", "/v1/laststock"],
+  });
 });
 
-app.get("/v1/laststock", async (req: Request, res: Response) => {
-    const lastStockElement: string = "#mw-customcollapsible-last figure > figcaption > center";
-    const fruitNames = await getFruits(lastStockElement, res);
-    const fruitPrices = await getPriceFruits(lastStockElement, res);
-    const fruitsJson: FruitObj[] = [];
-    for (let i = 0; i < fruitNames.length; i++) {
-        fruitsJson.push({
-            name: fruitNames[i],
-            price: parseFloat(fruitPrices[i].replace(/,/g, "")),
-        })
-    }
-    res.status(200).json(fruitsJson);
+app.get("/v1/currentstock", async (_, res) => {
+  try {
+    const { names, prices } = await scrape(
+      "mw-customcollapsible-current"
+    );
+
+    const result: Fruit[] = names.map((name, i) => ({
+      name,
+      price: safeNumber(prices[i]),
+    }));
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: "scrape failed" });
+  }
 });
 
-app.listen(port, () => {
-    console.log("Server đã khởi động ở port", port);
+app.get("/v1/laststock", async (_, res) => {
+  try {
+    const { names, prices } = await scrape(
+      "mw-customcollapsible-last"
+    );
+
+    const result: Fruit[] = names.map((name, i) => ({
+      name,
+      price: safeNumber(prices[i]),
+    }));
+
+    res.json(result);
+  } catch (err) {
+    res.status(500).json({ error: "scrape failed" });
+  }
+});
+
+app.listen(PORT, () => {
+  console.log("🔥 Server running on port", PORT);
 });
