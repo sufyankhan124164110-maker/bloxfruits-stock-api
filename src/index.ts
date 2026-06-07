@@ -2,104 +2,145 @@ import express, { Request, Response } from "express";
 import cors from "cors";
 import axios from "axios";
 import cheerio from "cheerio";
-import bodyParser from "body-parser";
 
 const app = express();
-app.use(bodyParser.json({ limit: "50mb" }));
 app.use(cors());
-app.use(
-  bodyParser.urlencoded({
-    limit: "50mb",
-    extended: true,
-    parameterLimit: 50000,
-  })
-);
 
-const port: number = 3300;
-const url: string = "https://blox-fruits.fandom.com/wiki/Blox_Fruits_%22Stock%22";
+const PORT = process.env.PORT || 3300;
 
-interface FruitObj {
-    name: string;
-    price: number;
+/* ---------------- SOURCES ---------------- */
+
+const SOURCES = [
+  {
+    name: "fandom",
+    url: "https://blox-fruits.fandom.com/wiki/Blox_Fruits_%22Stock%22",
+  },
+  {
+    name: "fruityblox",
+    url: "https://fruityblox.com/stock",
+  },
+  {
+    name: "beebom",
+    url: "https://beebom.com/blox-fruits-stock/",
+  },
+];
+
+/* ---------------- CACHE (IMPORTANT 🔥) ---------------- */
+
+let lastGoodData: any = null;
+
+/* ---------------- HELPERS ---------------- */
+
+const fetchHTML = async (url: string) => {
+  const res = await axios.get(url, {
+    headers: {
+      "User-Agent":
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/120 Safari/537.36",
+    },
+    timeout: 10000,
+  });
+
+  return res.data;
+};
+
+const parseFandom = (html: string) => {
+  const $ = cheerio.load(html);
+
+  const names: string[] = [];
+  const prices: string[] = [];
+
+  $("#mw-customcollapsible-current a[title]").each((_, el) => {
+    const name = $(el).attr("title");
+    if (name) names.push(name);
+  });
+
+  $("#mw-customcollapsible-current span").each((_, el) => {
+    const t = $(el).text().trim();
+    if (/\d/.test(t)) prices.push(t);
+  });
+
+  return { names, prices };
+};
+
+const parseFruityBlox = (html: string) => {
+  const $ = cheerio.load(html);
+
+  const names: string[] = [];
+  const prices: string[] = [];
+
+  $("table tr").each((_, el) => {
+    const tds = $(el).find("td");
+
+    const name = $(tds[0]).text().trim();
+    const price = $(tds[1]).text().trim();
+
+    if (name) names.push(name);
+    if (price) prices.push(price);
+  });
+
+  return { names, prices };
+};
+
+/* ---------------- CORE ENGINE ---------------- */
+
+async function getStockFromSources() {
+  for (const source of SOURCES) {
+    try {
+      const html = await fetchHTML(source.url);
+
+      let data;
+
+      if (source.name === "fandom") {
+        data = parseFandom(html);
+      } else {
+        data = parseFruityBlox(html);
+      }
+
+      if (data.names.length > 0) {
+        const result = data.names.map((name, i) => ({
+          name,
+          price: parseFloat((data.prices[i] || "0").replace(/,/g, "")),
+        }));
+
+        lastGoodData = result; // CACHE SUCCESS
+        return result;
+      }
+    } catch (err) {
+      console.log(`❌ Failed source: ${source.name}`);
+    }
+  }
+
+  // ALL FAILED → fallback cache
+  return lastGoodData || [];
 }
 
-const removeDuplicateItems = (arr: string[]): string[] => {
-    const uniqueFruitsSet: Set<string> = new Set(arr);
-    const uniqueFruitsArr: string[] = [...uniqueFruitsSet];
-    return uniqueFruitsArr;
-}
+/* ---------------- ROUTES ---------------- */
 
-const getFruits = (typeStockElement: string, res: Response): Promise<string[]> => {
-    return axios(url).then(result => {
-        const data = result.data;
-        const $ = cheerio.load(data);
-        const toRemoveDuplicateFruits: string[] = [];
-
-        $(typeStockElement, data).each((i, ele) => {
-            const getFruitName: any = $(ele).find("big b a").attr("title");
-            toRemoveDuplicateFruits.push(getFruitName);
-        });
-
-        const fruitNames: string[] = removeDuplicateItems(toRemoveDuplicateFruits);
-
-        return fruitNames;
-    }).catch (error => {
-        console.log(error);
-        res.status(500).json();
-        return [];
-    });
-}
-
-const getPriceFruits = (typeStockElement: string, res: Response): Promise<string[]> => {
-    return axios(url).then(result => {
-        const data = result.data;
-        const $ = cheerio.load(data);
-        const toRemoveDuplicatePrice: string[] = [];
-
-        $(typeStockElement, data).each((i, ele) => {
-            const getFruitName: any = $(ele).find("span").last().text();
-            toRemoveDuplicatePrice.push(getFruitName);
-        });
-
-        const fruitPrices = removeDuplicateItems(toRemoveDuplicatePrice);
-        return fruitPrices;
-    }).catch (error => {
-        console.log(error);
-        res.status(500).json();
-        return [];
-    });
-}
+app.get("/", (req: Request, res: Response) => {
+  res.json({
+    status: "online",
+    message: "Multi-source Blox Fruits Stock API",
+  });
+});
 
 app.get("/v1/currentstock", async (req: Request, res: Response) => {
-    const currentStockElement: string = "#mw-customcollapsible-current figure > figcaption > center";
-    const fruitNames = await getFruits(currentStockElement, res);
-    const fruitPrices = await getPriceFruits(currentStockElement, res);
-    const fruitsJson: FruitObj[] = [];
-
-    for (let i = 0; i < fruitNames.length; i++) {
-        fruitsJson.push({
-            name: fruitNames[i],
-            price: parseFloat(fruitPrices[i].replace(/,/g, '')),
-        })
-    }
-
-    res.status(200).json(fruitsJson);
+  try {
+    const data = await getStockFromSources();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: "all sources failed" });
+  }
 });
 
 app.get("/v1/laststock", async (req: Request, res: Response) => {
-    const lastStockElement: string = "#mw-customcollapsible-last figure > figcaption > center";
-    const fruitNames = await getFruits(lastStockElement, res);
-    const fruitPrices = await getPriceFruits(lastStockElement, res);
-    const fruitsJson: FruitObj[] = [];
-    for (let i = 0; i < fruitNames.length; i++) {
-        fruitsJson.push({
-            name: fruitNames[i],
-            price: parseFloat(fruitPrices[i].replace(/,/g, "")),
-        })
-    }
-    res.status(200).json(fruitsJson);
+  try {
+    const data = await getStockFromSources();
+    res.json(data);
+  } catch (err) {
+    res.status(500).json({ error: "all sources failed" });
+  }
 });
 
-app.listen(port, () => {
-    console.log("Server đã khởi động ở port", port);
+app.listen(PORT, () => {
+  console.log(`Server running on port ${PORT}`);
 });
