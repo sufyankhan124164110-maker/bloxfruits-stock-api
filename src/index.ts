@@ -81,6 +81,13 @@ app.get("/v1/currentstock", async (req: Request, res: Response) => {
             name: fruitNames[i],
             price: parseFloat(fruitPrices[i].replace(/,/g, '')),
         })
+  }
+      
+
+    for (let i = 0; i < fruitNames.length; i++) {
+        fruitsJson.push({
+            name: fruitNames[i],
+            price: parseFloat(fruitPrices[i].replace(/,/g, '')
     }
 
     res.status(200).json(fruitsJson);
